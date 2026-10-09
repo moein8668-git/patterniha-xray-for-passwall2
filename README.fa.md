@@ -70,6 +70,13 @@ pattx uninstall
 pattx passwall on     # مسیر xray در PassWall2 را روی /opt/pattx/xray می‌گذارد
 ```
 
+**شیم سازگاری:** هسته‌های جدید Xray (از جمله این یکی) فیلد `proxySettings` را از outbound حذف کرده‌اند
+(جایگزین: `streamSettings.sockopt.dialerProxy`) ولی PassWall2 نسخه 26.8.x هنوز آن را می‌نویسد، برای همین هسته بالا نمی‌آید
+(وضعیت «Core NOT RUNNING»). دستور `pattx passwall on` یک شیم کوچک به `/usr/lib/lua/luci/passwall2/util_xray.lua` اضافه می‌کند
+که این فیلد را تبدیل می‌کند؛ `pattx passwall off` و `uninstall` فایل اصلی را برمی‌گردانند (نسخه پشتیبان: `util_xray.lua.pattx.bak`).
+آپگرید PassWall2 فایل را بازنویسی می‌کند، پس بعدش دوباره `pattx passwall on` (یا `pattx update`) بزنید.
+اگر نسخه‌ای از PassWall2 این مشکل را رفع کند، شیم لازم نیست.
+
 PassWall2 کانفیگ را خودش می‌سازد؛ فیلدی که فقط در هسته patterniha هست باید در ویرایشگر نود PassWall2 پذیرفته شود.
 دکمه «آپدیت Xray» خود PassWall2 را نزنید چون هسته را عوض می‌کند. به‌جایش `pattx update` بزنید.
 

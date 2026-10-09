@@ -102,6 +102,46 @@ write_default_config() {
 EOF
 }
 
+PW_LUA="/usr/lib/lua/luci/passwall2/util_xray.lua"
+PW_MARK="-- pattx-compat"
+
+# Newer Xray cores removed outbound "proxySettings" (now streamSettings.sockopt.dialerProxy).
+# PassWall2 (as of 26.8.x) still writes the old field, so the core refuses the config.
+# This adds a tiny shim to PassWall2 that converts it when the config is written. Idempotent.
+patch_passwall() {
+	[ -f "$PW_LUA" ] || return 0
+	grep -q -e "$PW_MARK" "$PW_LUA" && return 0
+	[ -f "$PW_LUA.pattx.bak" ] || cp -f "$PW_LUA" "$PW_LUA.pattx.bak"
+	cat > /tmp/pattx-shim.lua <<'EOF'
+do -- pattx-compat
+	local _s = jsonc.stringify
+	jsonc.stringify = function(cfg, ...)
+		if type(cfg) == "table" and type(cfg.outbounds) == "table" then
+			for _, o in ipairs(cfg.outbounds) do
+				local ps = o.proxySettings
+				if ps ~= nil then
+					o.proxySettings = nil
+					if o.protocol ~= "dns" and ps.tag then
+						o.streamSettings = o.streamSettings or {}
+						o.streamSettings.sockopt = o.streamSettings.sockopt or {}
+						o.streamSettings.sockopt.dialerProxy = ps.tag
+					end
+				end
+			end
+		end
+		return _s(cfg, ...)
+	end
+end
+EOF
+	awk -v f=/tmp/pattx-shim.lua '{print} /^local jsonc = api.jsonc/ && !d {while((getline l < f)>0) print l; d=1}' "$PW_LUA.pattx.bak" > "$PW_LUA.new" \
+		&& mv -f "$PW_LUA.new" "$PW_LUA" && rm -f /tmp/pattx-shim.lua
+	grep -q -e "$PW_MARK" "$PW_LUA" && say "PassWall2 compat shim applied (proxySettings -> dialerProxy)" || say "warning: shim not applied"
+}
+
+unpatch_passwall() {
+	[ -f "$PW_LUA.pattx.bak" ] && mv -f "$PW_LUA.pattx.bak" "$PW_LUA" && say "PassWall2 compat shim removed"
+}
+
 migrate_old() { # from the early "pattn" naming
 	[ -d /opt/pattn ] || return 0
 	[ -f "$DIR/config.json" ] || cp -f /opt/pattn/config.json "$DIR/config.json" 2>/dev/null
@@ -153,8 +193,9 @@ do_install() { # $1 = tag or empty (latest)
 	"$SVC" enable
 	"$SVC" restart
 	# PassWall2 uses this core? restart it so it picks up the new binary
-	if [ "$(uci -q get passwall2.@global[0].enabled)" = 1 ] && [ "$(uci -q get passwall2.@global_app[0].xray_file)" = "$DIR/xray" ]; then
-		/etc/init.d/passwall2 restart >/dev/null 2>&1
+	if [ "$(uci -q get passwall2.@global_app[0].xray_file)" = "$DIR/xray" ]; then
+		patch_passwall   # re-apply after a PassWall2 upgrade
+		[ "$(uci -q get passwall2.@global[0].enabled)" = 1 ] && /etc/init.d/passwall2 restart >/dev/null 2>&1
 	fi
 	say "installed: $("$DIR/xray" version | head -n1)"
 }
@@ -191,8 +232,8 @@ status)
 passwall)
 	command -v uci >/dev/null && uci -q get passwall2.@global_app[0] >/dev/null || die "PassWall2 not installed"
 	case "$2" in
-	on) uci set passwall2.@global_app[0].xray_file="$DIR/xray" ;;
-	off) uci set passwall2.@global_app[0].xray_file=/usr/bin/xray ;;
+	on) uci set passwall2.@global_app[0].xray_file="$DIR/xray"; patch_passwall ;;
+	off) uci set passwall2.@global_app[0].xray_file=/usr/bin/xray; unpatch_passwall ;;
 	*) die "usage: pattx passwall on|off" ;;
 	esac
 	uci commit passwall2
@@ -210,6 +251,7 @@ auto)
 	;;
 uninstall)
 	"$SVC" stop 2>/dev/null; "$SVC" disable 2>/dev/null
+	unpatch_passwall
 	rm -f "$SVC"; sed -i '/pattx update/d' "$CRON" 2>/dev/null
 	uci -q get passwall2.@global_app[0] >/dev/null && uci set passwall2.@global_app[0].xray_file=/usr/bin/xray && uci commit passwall2
 	rm -rf "$DIR" "$SELF"

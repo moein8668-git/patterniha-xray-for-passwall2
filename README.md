@@ -69,6 +69,13 @@ Put your own Xray JSON config in `/opt/pattx/config.json` (outbounds, routing, .
 pattx passwall on     # sets passwall2 global_app xray_file to /opt/pattx/xray
 ```
 
+**Compatibility shim:** newer Xray cores (including this one) removed the outbound field `proxySettings`
+(now `streamSettings.sockopt.dialerProxy`), while PassWall2 26.8.x still writes it, so the core refuses to start
+("Core NOT RUNNING"). `pattx passwall on` adds a tiny shim to `/usr/lib/lua/luci/passwall2/util_xray.lua`
+that converts the field; `pattx passwall off` / `uninstall` restore the original (backup: `util_xray.lua.pattx.bak`).
+A PassWall2 upgrade overwrites the file, so run `pattx passwall on` (or `pattx update`) again afterwards.
+A PassWall2 release that fixes this makes the shim unnecessary.
+
 PassWall2 generates its own config, so a field that only exists in patterniha's core must be accepted by PassWall2's node editor to be used.
 Do not press PassWall2's own "update Xray" button, it would replace the core. Use `pattx update`.
 

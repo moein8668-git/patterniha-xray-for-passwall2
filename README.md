@@ -79,6 +79,17 @@ A PassWall2 release that fixes this makes the shim unnecessary.
 PassWall2 generates its own config, so a field that only exists in patterniha's core must be accepted by PassWall2's node editor to be used.
 Do not press PassWall2's own "update Xray" button, it would replace the core. Use `pattx update`.
 
+## Troubleshooting: node works on PC but not on the router (ECH)
+
+Nodes with ECH (`echConfigList: cloudflare-ech.com+udp://8.8.8.8`) make the core resolve an ECH record from that DNS server.
+On the router that query leaves from the router itself and PassWall2's transparent proxy sends it into the same node,
+which needs ECH to connect: a loop, you see `Failed to query ECH DNS record ... i/o timeout` in `/tmp/etc/passwall2/acl/default/global.log`.
+Fix: make that DNS IP go direct. In LuCI add it under PassWall2 > Rule Manage > Direct IP list, or:
+
+```sh
+printf '\n8.8.8.8\n' >> /usr/share/passwall2/direct_ip && /etc/init.d/passwall2 restart
+```
+
 ## Limits
 
 - Only the Xray core. patterniha's `sing-box` / `mihomo` builds are not used (glibc / x86-64-v3 requirements).

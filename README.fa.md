@@ -52,6 +52,7 @@ pattx update v26.10.9      نصب نسخه مشخص
 pattx rollback             برگشت به هسته قبلی
 pattx status               ورژن، سرویس، پورت‌ها، مسیر PassWall2
 pattx passwall on|off      استفاده در PassWall2 / برگشت به xray استاندارد
+pattx ech                  DNS نودهای ECH در PassWall2 را direct می‌کند (خودکار هم انجام می‌شود)
 pattx auto on|off          آپدیت خودکار روزانه (cron، ساعت ۰۴:۱۷)
 pattx uninstall
 ```
@@ -70,15 +71,36 @@ pattx uninstall
 pattx passwall on     # مسیر xray در PassWall2 را روی /opt/pattx/xray می‌گذارد
 ```
 
-**شیم سازگاری:** هسته‌های جدید Xray (از جمله این یکی) فیلد `proxySettings` را از outbound حذف کرده‌اند
+**شیم سازگاری (فقط برای PassWall2 قدیمی‌تر از 26.10):** هسته‌های جدید Xray (از جمله این یکی) فیلد `proxySettings` را از outbound حذف کرده‌اند
 (جایگزین: `streamSettings.sockopt.dialerProxy`) ولی PassWall2 نسخه 26.8.x هنوز آن را می‌نویسد، برای همین هسته بالا نمی‌آید
 (وضعیت «Core NOT RUNNING»). دستور `pattx passwall on` یک شیم کوچک به `/usr/lib/lua/luci/passwall2/util_xray.lua` اضافه می‌کند
 که این فیلد را تبدیل می‌کند؛ `pattx passwall off` و `uninstall` فایل اصلی را برمی‌گردانند (نسخه پشتیبان: `util_xray.lua.pattx.bak`).
 آپگرید PassWall2 فایل را بازنویسی می‌کند، پس بعدش دوباره `pattx passwall on` (یا `pattx update`) بزنید.
-اگر نسخه‌ای از PassWall2 این مشکل را رفع کند، شیم لازم نیست.
+PassWall2 نسخه 26.10.1 به بعد خودش از `dialerProxy` استفاده می‌کند و شیم خودکار رد می‌شود (روی 26.10.1 تست شده).
 
 PassWall2 کانفیگ را خودش می‌سازد؛ فیلدی که فقط در هسته patterniha هست باید در ویرایشگر نود PassWall2 پذیرفته شود.
 دکمه «آپدیت Xray» خود PassWall2 را نزنید چون هسته را عوض می‌کند. به‌جایش `pattx update` بزنید.
+
+## نودهای ECH (خودکار)
+
+نودهای ECH (مثل `echConfigList: cloudflare-ech.com+udp://8.8.8.8`) باعث می‌شوند هسته رکورد ECH را از آن DNS بگیرد.
+روی روتر این کوئری از خود روتر خارج می‌شود و پروکسی شفاف PassWall2 آن را به همان نود می‌فرستد، در حالی که نود برای وصل شدن به ECH نیاز دارد: یک حلقه
+(خطای `Failed to query ECH DNS record ... i/o timeout` در لاگ xray پس‌وال).
+
+`pattx` این را خودکار حل می‌کند: دستور `pattx ech` سرور DNS مربوط به ECH هر نود PassWall2 را می‌خواند و به لیست Direct IP پس‌وال
+(`/usr/share/passwall2/direct_ip`) اضافه می‌کند و اگر چیزی عوض شد PassWall2 را ری‌استارت می‌کند. خودش اجرا می‌شود:
+- وقتی در LuCI تنظیمات PassWall2 را ذخیره/اعمال می‌کنید (تریگر `config.change` در procd، پس نودهای ECH جدید هم پوشش داده می‌شوند)
+- هنگام بالا آمدن سرویس `pattx` (بوت) و با `pattx install` / `pattx update` / `pattx passwall on`
+
+نکته: آپگرید پکیج PassWall2 فایل `direct_ip` را بازنویسی می‌کند؛ بعدش `pattx ech` (یا `pattx update`) بزنید.
+اگر در `ech_config` اسم دامنه باشد (مثل `https://dns.google/dns-query`) هنگام همگام‌سازی resolve می‌شود و IPv4هایش اضافه می‌شوند.
+
+## عیب‌یابی: روتر با نودِ پشت Cloudflare نمی‌تواند DNS بگیرد
+
+اگر نود پشت Cloudflare (Workers/CDN) باشد، DNS روی TCP به آی‌پی‌های خود Cloudflare مثل `1.1.1.1:53` از طریق آن ممکن است خطا بدهد
+(`failed to read response length ... closed pipe`) و تا وقتی PassWall2 روشن است روتر DNS ندارد، حتی `pattx update` هم به GitHub نمی‌رسد.
+برای Remote DNS از DoH استفاده کنید: PassWall2 > Basic Settings > DNS > پروتکل Remote DNS برابر `DoH`،
+مثلاً `https://dns.google/dns-query,8.8.8.8`. اگر گیر کردید: `/etc/init.d/passwall2 stop`، بعد `pattx update`، بعد دوباره PassWall2 را روشن کنید.
 
 ## محدودیت‌ها
 

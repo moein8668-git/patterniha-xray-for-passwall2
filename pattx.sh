@@ -11,6 +11,7 @@
 #   pattx rollback             go back to the previous core
 #   pattx status               version, service state, ports
 #   pattx passwall on|off      use this core inside PassWall2 / go back to the stock xray
+#   pattx ech                  make DNS servers of ECH nodes (PassWall2) go direct (automatic, see README)
 #   pattx auto on|off          daily auto-update via cron
 #   pattx uninstall
 
@@ -68,13 +69,20 @@ need_unzip() {
 	command -v unzip >/dev/null 2>&1 || die "unzip is required (apk add unzip / opkg install unzip)"
 }
 
-write_service() {
-	cat > "$SVC" <<'EOF'
+write_service() { # sets SVC_CHANGED=1 if the init script content changed
+	SVC_CHANGED=0
+	cat > "$SVC.new" <<'EOF'
 #!/bin/sh /etc/rc.common
 USE_PROCD=1
 START=95
 STOP=10
+service_triggers() {
+	procd_add_reload_trigger pattx
+	# new/changed PassWall2 nodes (e.g. ECH) -> make their DNS go direct
+	procd_add_config_trigger config.change passwall2 /usr/bin/pattx ech
+}
 start_service() {
+	[ -x /usr/bin/pattx ] && /usr/bin/pattx ech >/dev/null 2>&1
 	procd_open_instance
 	procd_set_param command /opt/pattx/xray run -c /opt/pattx/config.json
 	procd_set_param env XRAY_LOCATION_ASSET=/opt/pattx
@@ -83,8 +91,9 @@ start_service() {
 	procd_set_param stderr 1
 	procd_close_instance
 }
-service_triggers() { procd_add_reload_trigger pattx; }
 EOF
+	if [ -f "$SVC" ] && cmp -s "$SVC" "$SVC.new"; then rm -f "$SVC.new"
+	else mv -f "$SVC.new" "$SVC"; SVC_CHANGED=1; fi
 	chmod +x "$SVC"
 }
 
@@ -111,7 +120,9 @@ PW_MARK="-- pattx-compat"
 patch_passwall() {
 	[ -f "$PW_LUA" ] || return 0
 	grep -q -e "$PW_MARK" "$PW_LUA" && return 0
-	[ -f "$PW_LUA.pattx.bak" ] || cp -f "$PW_LUA" "$PW_LUA.pattx.bak"
+	# newer PassWall2 already uses dialerProxy: nothing to do
+	grep -q 'proxySettings' "$PW_LUA" || { rm -f "$PW_LUA.pattx.bak"; return 0; }
+	cp -f "$PW_LUA" "$PW_LUA.pattx.bak"   # always from the current (unpatched) file
 	cat > /tmp/pattx-shim.lua <<'EOF'
 do -- pattx-compat
 	local _s = jsonc.stringify
@@ -142,6 +153,37 @@ unpatch_passwall() {
 	[ -f "$PW_LUA.pattx.bak" ] && mv -f "$PW_LUA.pattx.bak" "$PW_LUA" && say "PassWall2 compat shim removed"
 }
 
+# ECH nodes ("echConfigList": "cloudflare-ech.com+udp://8.8.8.8") make the core query that DNS server itself.
+# On the router that query would go into PassWall2's transparent proxy -> same node -> loop (timeout).
+# ech_sync finds every ECH DNS server used by PassWall2 nodes and adds it to PassWall2's direct IP list.
+PW_DIRECT="/usr/share/passwall2/direct_ip"
+
+ech_sync() {
+	[ -f "$PW_DIRECT" ] || return 0
+	command -v uci >/dev/null 2>&1 || return 0
+	changed=0
+	for v in $(uci -q show passwall2 | sed -n "s/^passwall2\.[^.]*\.ech_config='\(.*\)'$/\1/p"); do
+		case "$v" in *://*) ;; *) continue ;; esac
+		srv="${v#*://}"; srv="${srv%%/*}"; srv="${srv%%:*}"; srv="${srv%%\?*}"
+		[ -n "$srv" ] || continue
+		case "$srv" in
+		*[!0-9.]*) ips=$(nslookup "$srv" 2>/dev/null | awk '/^Name:/{f=1} f && /^Address/{print $NF}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$') ;;
+		*) ips="$srv" ;;
+		esac
+		for ip in $ips; do
+			grep -qx -e "$ip" "$PW_DIRECT" && continue
+			[ -n "$(tail -c1 "$PW_DIRECT")" ] && echo >> "$PW_DIRECT"
+			echo "$ip" >> "$PW_DIRECT"
+			say "ECH DNS $ip -> PassWall2 direct list"
+			changed=1
+		done
+	done
+	if [ "$changed" = 1 ] && [ "$(uci -q get passwall2.@global[0].enabled)" = 1 ]; then
+		/etc/init.d/passwall2 restart >/dev/null 2>&1 &
+	fi
+	return 0
+}
+
 migrate_old() { # from the early "pattn" naming
 	[ -d /opt/pattn ] || return 0
 	[ -f "$DIR/config.json" ] || cp -f /opt/pattn/config.json "$DIR/config.json" 2>/dev/null
@@ -159,7 +201,11 @@ do_install() { # $1 = tag or empty (latest)
 	[ -n "$tag" ] || die "cannot find the latest release (no internet / GitHub blocked?)"
 	cur=$(cur_version)
 	if [ "$FORCE" != 1 ] && [ -n "$cur" ] && [ "v$cur" = "$tag" ]; then
-		say "already on $tag"; return 0
+		say "already on $tag"
+		write_service; "$SVC" enable
+		[ "$SVC_CHANGED" = 1 ] && { say "service script updated"; "$SVC" restart; }
+		[ "$(uci -q get passwall2.@global_app[0].xray_file)" = "$DIR/xray" ] && { patch_passwall; ech_sync; }
+		return 0
 	fi
 	asset=$(detect_asset)
 	url="https://github.com/$REPO/releases/download/$tag/Xray-$asset.zip"
@@ -195,6 +241,7 @@ do_install() { # $1 = tag or empty (latest)
 	# PassWall2 uses this core? restart it so it picks up the new binary
 	if [ "$(uci -q get passwall2.@global_app[0].xray_file)" = "$DIR/xray" ]; then
 		patch_passwall   # re-apply after a PassWall2 upgrade
+		ech_sync
 		[ "$(uci -q get passwall2.@global[0].enabled)" = 1 ] && /etc/init.d/passwall2 restart >/dev/null 2>&1
 	fi
 	say "installed: $("$DIR/xray" version | head -n1)"
@@ -210,6 +257,8 @@ cmd="${1:-help}"
 case "$cmd" in
 install)
 	mkdir -p "$DIR"; install_self
+	# local fixes first, they must work even if DNS/internet is broken (e.g. ECH loop)
+	if [ -x "$DIR/xray" ]; then write_service; [ "$SVC_CHANGED" = 1 ] && "$SVC" restart; ech_sync; fi
 	do_install "$2"
 	say "SOCKS5 :10808  HTTP :10809  config: $DIR/config.json  (manage with: pattx help)"
 	;;
@@ -229,6 +278,7 @@ status)
 	netstat -lnt 2>/dev/null | grep -E ':(10808|10809) ' | awk '{print "  listening " $4}'
 	say "passwall2 xray path: $(uci -q get passwall2.@global_app[0].xray_file)"
 	;;
+ech) ech_sync ;;
 passwall)
 	command -v uci >/dev/null && uci -q get passwall2.@global_app[0] >/dev/null || die "PassWall2 not installed"
 	case "$2" in
@@ -237,6 +287,7 @@ passwall)
 	*) die "usage: pattx passwall on|off" ;;
 	esac
 	uci commit passwall2
+	[ "$2" = on ] && ech_sync
 	[ "$(uci -q get passwall2.@global[0].enabled)" = 1 ] && /etc/init.d/passwall2 restart >/dev/null 2>&1
 	say "PassWall2 xray = $(uci get passwall2.@global_app[0].xray_file)"
 	;;
@@ -258,6 +309,6 @@ uninstall)
 	say "removed"
 	;;
 *)
-	sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
 	;;
 esac

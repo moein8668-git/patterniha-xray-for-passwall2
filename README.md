@@ -51,6 +51,7 @@ pattx update v26.10.9      install a specific release
 pattx rollback             go back to the previous core
 pattx status               version, service, ports, PassWall2 path
 pattx passwall on|off      use this core in PassWall2 / back to stock xray
+pattx ech                  make ECH DNS servers of PassWall2 nodes go direct (also automatic)
 pattx auto on|off          daily auto-update (cron, 04:17)
 pattx uninstall
 ```
@@ -69,26 +70,36 @@ Put your own Xray JSON config in `/opt/pattx/config.json` (outbounds, routing, .
 pattx passwall on     # sets passwall2 global_app xray_file to /opt/pattx/xray
 ```
 
-**Compatibility shim:** newer Xray cores (including this one) removed the outbound field `proxySettings`
+**Compatibility shim (only for PassWall2 older than 26.10):** newer Xray cores (including this one) removed the outbound field `proxySettings`
 (now `streamSettings.sockopt.dialerProxy`), while PassWall2 26.8.x still writes it, so the core refuses to start
 ("Core NOT RUNNING"). `pattx passwall on` adds a tiny shim to `/usr/lib/lua/luci/passwall2/util_xray.lua`
 that converts the field; `pattx passwall off` / `uninstall` restore the original (backup: `util_xray.lua.pattx.bak`).
 A PassWall2 upgrade overwrites the file, so run `pattx passwall on` (or `pattx update`) again afterwards.
-A PassWall2 release that fixes this makes the shim unnecessary.
+PassWall2 26.10.1 and newer already use `dialerProxy`, there the shim is skipped automatically (tested with 26.10.1).
 
 PassWall2 generates its own config, so a field that only exists in patterniha's core must be accepted by PassWall2's node editor to be used.
 Do not press PassWall2's own "update Xray" button, it would replace the core. Use `pattx update`.
 
-## Troubleshooting: node works on PC but not on the router (ECH)
+## ECH nodes (automatic)
 
 Nodes with ECH (`echConfigList: cloudflare-ech.com+udp://8.8.8.8`) make the core resolve an ECH record from that DNS server.
 On the router that query leaves from the router itself and PassWall2's transparent proxy sends it into the same node,
-which needs ECH to connect: a loop, you see `Failed to query ECH DNS record ... i/o timeout` in `/tmp/etc/passwall2/acl/default/global.log`.
-Fix: make that DNS IP go direct. In LuCI add it under PassWall2 > Rule Manage > Direct IP list, or:
+which needs ECH to connect: a loop (`Failed to query ECH DNS record ... i/o timeout` in the PassWall2 xray log).
 
-```sh
-printf '\n8.8.8.8\n' >> /usr/share/passwall2/direct_ip && /etc/init.d/passwall2 restart
-```
+`pattx` fixes this automatically: `pattx ech` reads the ECH DNS server of every PassWall2 node and adds it to PassWall2's
+direct IP list (`/usr/share/passwall2/direct_ip`), then restarts PassWall2 if something changed. It runs by itself
+- when you save/apply PassWall2 settings in LuCI (procd `config.change` trigger, so new or imported ECH nodes are covered),
+- when the `pattx` service starts (boot) and on `pattx install` / `pattx update` / `pattx passwall on`.
+
+Note: a PassWall2 package upgrade overwrites `direct_ip`; run `pattx ech` (or `pattx update`) afterwards.
+Hostnames in `ech_config` (e.g. `https://dns.google/dns-query`) are resolved at sync time and their IPv4 addresses are added.
+
+## Troubleshooting: router cannot resolve DNS through a Cloudflare-fronted node
+
+If a node sits behind Cloudflare (Workers/CDN), TCP DNS to Cloudflare IPs such as `1.1.1.1:53` through it can fail
+(`failed to read response length ... closed pipe`) and the router then loses DNS while PassWall2 is on, so even `pattx update` cannot
+reach GitHub. Use DoH for the remote DNS: PassWall2 > Basic Settings > DNS > Remote DNS protocol `DoH`,
+e.g. `https://dns.google/dns-query,8.8.8.8`. If you are stuck, `/etc/init.d/passwall2 stop`, run `pattx update`, then start PassWall2 again.
 
 ## Limits
 

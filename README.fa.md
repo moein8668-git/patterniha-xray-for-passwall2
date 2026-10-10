@@ -53,6 +53,9 @@ pattx rollback             برگشت به هسته قبلی
 pattx status               ورژن، سرویس، پورت‌ها، مسیر PassWall2
 pattx passwall on|off      استفاده در PassWall2 / برگشت به xray استاندارد
 pattx ech                  DNS نودهای ECH در PassWall2 را direct می‌کند (خودکار هم انجام می‌شود)
+pattx dns                  نمایش Remote DNS پس‌وال و هشدار اگر tcp باشد
+pattx dns udp [IP] [-y]    تغییر Remote DNS به UDP (هشدار، سؤال، بررسی، برگشت خودکار در صورت خرابی)
+pattx dns restore          برگرداندن آخرین تغییر `pattx dns udp`
 pattx auto on|off          آپدیت خودکار روزانه (cron، ساعت ۰۴:۱۷)
 pattx uninstall
 ```
@@ -95,12 +98,39 @@ PassWall2 کانفیگ را خودش می‌سازد؛ فیلدی که فقط د
 نکته: آپگرید پکیج PassWall2 فایل `direct_ip` را بازنویسی می‌کند؛ بعدش `pattx ech` (یا `pattx update`) بزنید.
 اگر در `ech_config` اسم دامنه باشد (مثل `https://dns.google/dns-query`) هنگام همگام‌سازی resolve می‌شود و IPv4هایش اضافه می‌شوند.
 
-## عیب‌یابی: روتر با نودِ پشت Cloudflare نمی‌تواند DNS بگیرد
+## «تست نود OK است ولی ترافیکی از روتر رد نمی‌شود»: Remote DNS (از شما می‌پرسد)
 
-اگر نود پشت Cloudflare (Workers/CDN) باشد، DNS روی TCP به آی‌پی‌های خود Cloudflare مثل `1.1.1.1:53` از طریق آن ممکن است خطا بدهد
-(`failed to read response length ... closed pipe`) و تا وقتی PassWall2 روشن است روتر DNS ندارد، حتی `pattx update` هم به GitHub نمی‌رسد.
-برای Remote DNS از DoH استفاده کنید: PassWall2 > Basic Settings > DNS > پروتکل Remote DNS برابر `DoH`،
-مثلاً `https://dns.google/dns-query,8.8.8.8`. اگر گیر کردید: `/etc/init.d/passwall2 stop`، بعد `pattx update`، بعد دوباره PassWall2 را روشن کنید.
+دو مشکل DNS کاملاً جدا وجود دارد و `pattx` با هرکدام فرق می‌کند:
+
+| | DNS مربوط به ECH (بخش بالا) | Remote DNS (این بخش) |
+|---|---|---|
+| چه کسی می‌پرسد | خود هسته، برای گرفتن کلید ECH قبل از وصل شدن به نود | PassWall2، برای resolve کردن سایت‌هایی که دستگاه‌ها باز می‌کنند |
+| علامت | `Failed to query ECH DNS record ... i/o timeout`، نود اصلاً وصل نمی‌شود | نود وصل است و «تست» OK می‌دهد ولی هیچ سایتی باز نمی‌شود؛ در لاگ `app/dns: failed to read response length > EOF` (یا `closed pipe`) |
+| علت | کوئری به پروکسی شفاف می‌رسد و به همان نود می‌رود: حلقه | بسیاری از نودهای پشت CDN (مثل Cloudflare) **TCP/53** را می‌بندند و Remote DNS پیش‌فرض PassWall2 برابر `tcp://1.1.1.1` است |
+| کار pattx | **خودکار** (`pattx ech`) | **از شما می‌پرسد** (`pattx dns udp`): هشدار، `y/N`، بررسی، برگشت خودکار |
+
+چرا «تست نود» با این حال OK می‌دهد: تست از SOCKS با resolve سمت سرور استفاده می‌کند، یعنی خود نود اسم را resolve می‌کند و DNS روتر دخالت ندارد.
+حالت شفاف اول باید روتر اسم را resolve کند. بدون Remote DNS سالم حتی `pattx update` هم به GitHub نمی‌رسد.
+
+```sh
+pattx dns                  # نمایش Remote DNS فعلی، هشدار اگر tcp باشد
+pattx dns udp              # تغییر به UDP (اگر IP فعلی IPv4 باشد نگه داشته می‌شود وگرنه 8.8.8.8)؛ اول می‌پرسد
+pattx dns udp 8.8.8.8 -y   # بدون سؤال (برای اسکریپت)
+pattx dns restore          # برگرداندن
+```
+
+`pattx dns udp` هشدار می‌دهد، `y/N` می‌پرسد (بدون ترمینال فقط هشدار چاپ می‌کند و چیزی عوض نمی‌کند؛ `-y` سؤال را رد می‌کند)،
+مقدارهای قبلی را در `/opt/pattx/dns.prev` ذخیره می‌کند، تغییر می‌دهد، PassWall2 را ری‌استارت می‌کند، چک می‌کند `github.com` resolve شود
+و اگر نشد **خودش برمی‌گرداند**. `pattx passwall on` هم اگر Remote DNS برابر `tcp` باشد یادداشت چاپ می‌کند و پیشنهاد می‌دهد.
+تنظیمات شما هیچ‌وقت بی‌صدا عوض نمی‌شود.
+
+گزینه‌ها (روی نود XHTTP پشت Cloudflare تست شده: UDP/53 کار می‌کند، TCP/53 نه، HTTPS بله):
+
+- **UDP** (`pattx dns udp`): ساده‌ترین، DNS ساده داخل تونل. نود باید UDP/53 را اجازه بدهد (pattx چک می‌کند).
+- **DoH** (LuCI > PassWall2 > DNS، مثلاً `https://dns.google/dns-query,8.8.8.8`): رمزنگاری‌شده و روی تقریباً هر نودی کار می‌کند. اگر UDP جواب نداد از این استفاده کنید.
+- detour برابر `direct` برای Remote DNS: همه‌جا کار می‌کند ولی کوئری‌های DNS بدون پروکسی از روتر خارج می‌شوند.
+
+اگر بدون DNS گیر کردید: `/etc/init.d/passwall2 stop`، بعد `pattx update`، بعد دوباره PassWall2 را روشن کنید.
 
 ## محدودیت‌ها
 

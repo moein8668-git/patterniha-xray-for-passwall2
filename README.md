@@ -52,6 +52,10 @@ pattx rollback             go back to the previous core
 pattx status               version, service, ports, PassWall2 path
 pattx passwall on|off      use this core in PassWall2 / back to stock xray
 pattx ech                  make ECH DNS servers of PassWall2 nodes go direct (also automatic)
+pattx ech                  make the DNS servers of ECH nodes go direct (automatic, see below)
+pattx dns                  show PassWall2 Remote DNS and warn if it is tcp
+pattx dns udp [IP] [-y]    switch Remote DNS to UDP (warns, asks, verifies, rolls back on failure)
+pattx dns restore          undo the last 'pattx dns udp'
 pattx auto on|off          daily auto-update (cron, 04:17)
 pattx uninstall
 ```
@@ -94,12 +98,38 @@ direct IP list (`/usr/share/passwall2/direct_ip`), then restarts PassWall2 if so
 Note: a PassWall2 package upgrade overwrites `direct_ip`; run `pattx ech` (or `pattx update`) afterwards.
 Hostnames in `ech_config` (e.g. `https://dns.google/dns-query`) are resolved at sync time and their IPv4 addresses are added.
 
-## Troubleshooting: router cannot resolve DNS through a Cloudflare-fronted node
+## "Node test passes but no traffic goes through the router": Remote DNS (asks you)
 
-If a node sits behind Cloudflare (Workers/CDN), TCP DNS to Cloudflare IPs such as `1.1.1.1:53` through it can fail
-(`failed to read response length ... closed pipe`) and the router then loses DNS while PassWall2 is on, so even `pattx update` cannot
-reach GitHub. Use DoH for the remote DNS: PassWall2 > Basic Settings > DNS > Remote DNS protocol `DoH`,
-e.g. `https://dns.google/dns-query,8.8.8.8`. If you are stuck, `/etc/init.d/passwall2 stop`, run `pattx update`, then start PassWall2 again.
+There are **two different DNS problems**. `pattx` handles each one differently:
+
+| | ECH DNS (section above) | Remote DNS (this section) |
+|---|---|---|
+| Who asks | the core itself, to fetch the ECH key before it can connect to the node | PassWall2, to resolve the domains your devices open |
+| Symptom | `Failed to query ECH DNS record ... i/o timeout`, the node never connects | node connects and "test" passes, but nothing opens; log has `app/dns: failed to read response length > EOF` (or `closed pipe`) |
+| Cause | the query is caught by the transparent proxy and sent into the same node: a loop | many CDN-fronted nodes (e.g. behind Cloudflare) close **TCP/53**, and PassWall2's default Remote DNS is `tcp://1.1.1.1` |
+| What pattx does | **automatic** (`pattx ech`) | **asks you** (`pattx dns udp`): warning, `y/N`, verification, automatic rollback |
+
+Why the node "test" still passes: it uses SOCKS with remote name resolution, so the node resolves the name itself and the router's DNS is
+never used. Transparent mode needs the router to resolve first. Without working Remote DNS even `pattx update` cannot reach GitHub.
+
+```sh
+pattx dns                  # show the current Remote DNS, warns if it is tcp
+pattx dns udp              # switch to UDP (keeps your current IP if it is an IPv4, else 8.8.8.8); asks first
+pattx dns udp 8.8.8.8 -y   # no question (scripts)
+pattx dns restore          # undo
+```
+
+`pattx dns udp` shows a warning, asks `y/N` (without a terminal it only prints the warning and changes nothing, `-y` skips the question),
+saves your old values in `/opt/pattx/dns.prev`, switches, restarts PassWall2, checks that `github.com` resolves, and **rolls back by itself**
+if it does not. `pattx passwall on` also prints a note and offers it when Remote DNS is `tcp`. Your settings are never changed silently.
+
+Options (tested on an XHTTP node behind Cloudflare: UDP/53 works, TCP/53 does not, HTTPS works):
+
+- **UDP** (`pattx dns udp`): simplest, plain DNS inside the tunnel. The node must allow UDP/53 (pattx verifies it).
+- **DoH** (LuCI > PassWall2 > DNS, e.g. `https://dns.google/dns-query,8.8.8.8`): encrypted, works on almost any node. Use it if UDP fails.
+- Remote DNS detour `direct`: works anywhere, but your DNS queries leave the router without the proxy.
+
+If you are stuck without DNS: `/etc/init.d/passwall2 stop`, run `pattx update`, then start PassWall2 again.
 
 ## Limits
 

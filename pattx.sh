@@ -12,6 +12,7 @@
 #   pattx status               version, service state, ports
 #   pattx passwall on|off      use this core inside PassWall2 / go back to the stock xray
 #   pattx ech                  make DNS servers of ECH nodes (PassWall2) go direct (automatic, see README)
+#   pattx dns [udp [IP]|restore]  PassWall2 Remote DNS: warn about tcp, switch to UDP (asks first, auto rollback)
 #   pattx auto on|off          daily auto-update via cron
 #   pattx uninstall
 
@@ -187,6 +188,69 @@ ech_sync() {
 	return 0
 }
 
+# --- Remote DNS of PassWall2 -------------------------------------------------------------
+# Many CDN-fronted nodes (e.g. behind Cloudflare) close TCP/53 but pass UDP/53 and HTTPS, so PassWall2's
+# default "tcp://1.1.1.1" Remote DNS makes every domain fail to resolve in transparent mode, while the node
+# "test" button still passes (it lets the node resolve the name). This switches Remote DNS to UDP, with a
+# warning, a confirmation, an automatic check and an automatic rollback.
+PW_CFG="passwall2.@global[0]"
+
+dns_cur() { echo "$(uci -q get $PW_CFG.remote_dns_protocol)://$(uci -q get $PW_CFG.remote_dns) (detour: $(uci -q get $PW_CFG.remote_dns_detour))"; }
+
+ask_yes() { # ask_yes "question" ; default No ; non-interactive = No
+	[ -t 0 ] || return 1
+	printf '[pattx] %s [y/N] ' "$1"; read -r a
+	case "$a" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+dns_apply_check() { # restart PassWall2 and verify that domains resolve
+	[ "$(uci -q get passwall2.@global[0].enabled)" = 1 ] || { say "PassWall2 is off, not verified"; return 0; }
+	/etc/init.d/passwall2 restart >/dev/null 2>&1
+	say "checking that domains resolve (about 20 s)..."
+	sleep 20
+	nslookup github.com 127.0.0.1 2>/dev/null | grep -q 'Address: [0-9]'
+}
+
+dns_restore() {
+	[ -f "$DIR/dns.prev" ] || die "nothing to restore"
+	. "$DIR/dns.prev"
+	uci set $PW_CFG.remote_dns_protocol="$P"; uci set $PW_CFG.remote_dns="$S"
+	if [ -n "$D" ]; then uci set $PW_CFG.remote_dns_doh="$D"; else uci -q delete $PW_CFG.remote_dns_doh; fi
+	uci commit passwall2
+	[ "$(uci -q get passwall2.@global[0].enabled)" = 1 ] && /etc/init.d/passwall2 restart >/dev/null 2>&1
+	rm -f "$DIR/dns.prev"
+	say "Remote DNS restored: $(dns_cur)"
+}
+
+dns_udp() { # dns_udp [IP] [-y]
+	ip=""; yes=0
+	for a in "$@"; do case "$a" in -y|--yes) yes=1 ;; *) ip="$a" ;; esac; done
+	command -v uci >/dev/null && uci -q get passwall2.@global[0] >/dev/null || die "PassWall2 not installed"
+	if [ -z "$ip" ]; then
+		ip=$(uci -q get $PW_CFG.remote_dns)
+		case "$ip" in ""|*[!0-9.]*) ip=8.8.8.8 ;; esac
+	fi
+	case "$ip" in *[!0-9.]*|"") die "usage: pattx dns udp [DNS_IPV4] [-y]" ;; esac
+	say "current Remote DNS: $(dns_cur)"
+	say "WARNING: UDP DNS will be sent to $ip through your proxy node, in plain text inside the tunnel."
+	say "  - the node/server must allow UDP/53 (not all do). pattx checks it and rolls back if names do not resolve."
+	say "  - DoH is the safer choice if your node cannot do UDP: set it in LuCI > PassWall2 > DNS."
+	say "  - it changes your PassWall2 DNS settings (a backup is kept: 'pattx dns restore' undoes it)."
+	if [ "$yes" != 1 ]; then ask_yes "Switch Remote DNS to udp://$ip ?" || { say "not changed"; return 0; }; fi
+	P=$(uci -q get $PW_CFG.remote_dns_protocol); S=$(uci -q get $PW_CFG.remote_dns); D=$(uci -q get $PW_CFG.remote_dns_doh)
+	printf "P='%s'\nS='%s'\nD='%s'\n" "$P" "$S" "$D" > "$DIR/dns.prev"
+	uci set $PW_CFG.remote_dns_protocol=udp; uci set $PW_CFG.remote_dns="$ip"; uci commit passwall2
+	if dns_apply_check; then say "OK: Remote DNS is now udp://$ip and names resolve"
+	else say "names do NOT resolve with UDP on this node, rolling back"; dns_restore; fi
+}
+
+dns_hint() { # called after 'passwall on': warn about tcp Remote DNS
+	[ "$(uci -q get $PW_CFG.remote_dns_protocol)" = tcp ] || return 0
+	say "NOTE: PassWall2 Remote DNS is tcp://$(uci -q get $PW_CFG.remote_dns). Many CDN-fronted nodes (Cloudflare) block TCP/53,"
+	say "      then nothing resolves in transparent mode although the node test passes. Fix: 'pattx dns udp' (or use DoH)."
+	if ask_yes "Switch Remote DNS to UDP now?"; then dns_udp -y; fi
+}
+
 migrate_old() { # from the early "pattn" naming
 	[ -d /opt/pattn ] || return 0
 	[ -f "$DIR/config.json" ] || cp -f /opt/pattn/config.json "$DIR/config.json" 2>/dev/null
@@ -282,6 +346,14 @@ status)
 	say "passwall2 xray path: $(uci -q get passwall2.@global_app[0].xray_file)"
 	;;
 ech) ech_sync ;;
+dns)
+	case "$2" in
+	udp) shift 2; dns_udp "$@" ;;
+	restore) dns_restore ;;
+	""|show) say "PassWall2 Remote DNS: $(dns_cur)"; dns_hint ;;
+	*) die "usage: pattx dns [show|udp [IP] [-y]|restore]" ;;
+	esac
+	;;
 passwall)
 	command -v uci >/dev/null && uci -q get passwall2.@global_app[0] >/dev/null || die "PassWall2 not installed"
 	case "$2" in
@@ -293,6 +365,7 @@ passwall)
 	[ "$2" = on ] && ech_sync
 	[ "$(uci -q get passwall2.@global[0].enabled)" = 1 ] && /etc/init.d/passwall2 restart >/dev/null 2>&1
 	say "PassWall2 xray = $(uci get passwall2.@global_app[0].xray_file)"
+	[ "$2" = on ] && dns_hint
 	;;
 auto)
 	sed -i '/pattx update/d' "$CRON" 2>/dev/null
@@ -312,6 +385,6 @@ uninstall)
 	say "removed"
 	;;
 *)
-	sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
 	;;
 esac

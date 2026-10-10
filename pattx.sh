@@ -69,6 +69,9 @@ need_unzip() {
 	command -v unzip >/dev/null 2>&1 || die "unzip is required (apk add unzip / opkg install unzip)"
 }
 
+# procd prints a harmless "Command failed: Not found" when it deletes a service it doesn't know yet (fresh install)
+svc_restart() { "$SVC" restart 2>&1 | grep -v 'Not found'; return 0; }
+
 write_service() { # sets SVC_CHANGED=1 if the init script content changed
 	SVC_CHANGED=0
 	cat > "$SVC.new" <<'EOF'
@@ -203,7 +206,7 @@ do_install() { # $1 = tag or empty (latest)
 	if [ "$FORCE" != 1 ] && [ -n "$cur" ] && [ "v$cur" = "$tag" ]; then
 		say "already on $tag"
 		write_service; "$SVC" enable
-		[ "$SVC_CHANGED" = 1 ] && { say "service script updated"; "$SVC" restart; }
+		[ "$SVC_CHANGED" = 1 ] && { say "service script updated"; svc_restart; }
 		[ "$(uci -q get passwall2.@global_app[0].xray_file)" = "$DIR/xray" ] && { patch_passwall; ech_sync; }
 		return 0
 	fi
@@ -237,7 +240,7 @@ do_install() { # $1 = tag or empty (latest)
 	"$DIR/xray" run -test -c "$DIR/config.json" >/dev/null 2>&1 || say "warning: config.json does not pass 'xray run -test'"
 	write_service
 	"$SVC" enable
-	"$SVC" restart
+	svc_restart
 	# PassWall2 uses this core? restart it so it picks up the new binary
 	if [ "$(uci -q get passwall2.@global_app[0].xray_file)" = "$DIR/xray" ]; then
 		patch_passwall   # re-apply after a PassWall2 upgrade
@@ -258,7 +261,7 @@ case "$cmd" in
 install)
 	mkdir -p "$DIR"; install_self
 	# local fixes first, they must work even if DNS/internet is broken (e.g. ECH loop)
-	if [ -x "$DIR/xray" ]; then write_service; [ "$SVC_CHANGED" = 1 ] && "$SVC" restart; ech_sync; fi
+	if [ -x "$DIR/xray" ]; then write_service; [ "$SVC_CHANGED" = 1 ] && svc_restart; ech_sync; fi
 	do_install "$2"
 	say "SOCKS5 :10808  HTTP :10809  config: $DIR/config.json  (manage with: pattx help)"
 	;;

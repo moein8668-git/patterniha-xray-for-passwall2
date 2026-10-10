@@ -51,12 +51,11 @@ pattx update v26.10.9      install a specific release
 pattx rollback             go back to the previous core
 pattx status               version, service, ports, PassWall2 path
 pattx passwall on|off      use this core in PassWall2 / back to stock xray
-pattx ech                  make ECH DNS servers of PassWall2 nodes go direct (also automatic)
-pattx ech                  make the DNS servers of ECH nodes go direct (automatic, see below)
+pattx ech                  make the DNS servers of ECH nodes go direct (also runs automatically, see below)
 pattx dns                  show PassWall2 Remote DNS and warn if it is tcp
 pattx dns udp [IP] [-y]    switch Remote DNS to UDP (warns, asks, verifies, rolls back on failure)
 pattx dns restore          undo the last 'pattx dns udp'
-pattx auto on|off          daily auto-update (cron, 04:17)
+pattx auto on|off          once a day (04:17, router time) run 'pattx update'; off by default
 pattx uninstall
 ```
 

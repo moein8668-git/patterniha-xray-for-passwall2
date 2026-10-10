@@ -55,7 +55,8 @@ pattx ech                  make the DNS servers of ECH nodes go direct (also run
 pattx dns                  show PassWall2 Remote DNS and warn if it is tcp
 pattx dns udp [IP] [-y]    switch Remote DNS to UDP (warns, asks, verifies, rolls back on failure)
 pattx dns restore          undo the last 'pattx dns udp'
-pattx auto on|off          once a day (04:17, router time) run 'pattx update'; off by default
+pattx auto on [HH:MM]      once a day at that router time run 'pattx update' (default 04:17, e.g. 'pattx auto on 03:30'); off by default
+pattx auto off             stop the daily update (the time is the router's clock: check with `date`; OpenWrt is UTC unless you set the timezone in System > General)
 pattx uninstall
 ```
 

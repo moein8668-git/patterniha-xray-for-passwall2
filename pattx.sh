@@ -13,7 +13,7 @@
 #   pattx passwall on|off      use this core inside PassWall2 / go back to the stock xray
 #   pattx ech                  make DNS servers of ECH nodes (PassWall2) go direct (automatic, see README)
 #   pattx dns [udp [IP]|restore]  PassWall2 Remote DNS: warn about tcp, switch to UDP (asks first, auto rollback)
-#   pattx auto on|off          daily auto-update via cron
+#   pattx auto on [HH:MM]      daily auto-update at that router time (default 04:17); 'pattx auto off' to stop
 #   pattx uninstall
 
 REPO="patterniha/xray-core"
@@ -368,11 +368,17 @@ passwall)
 	[ "$2" = on ] && dns_hint
 	;;
 auto)
-	sed -i '/pattx update/d' "$CRON" 2>/dev/null
 	case "$2" in
-	on) echo "17 4 * * * $SELF update >/tmp/pattx-update.log 2>&1" >> "$CRON"; say "daily auto-update on" ;;
-	off) say "auto-update off" ;;
-	*) die "usage: pattx auto on|off" ;;
+	on)
+		t="${3:-04:17}"   # HH:MM in the router's time (see 'date'), default 04:17
+		case "$t" in [0-9]:[0-5][0-9]|[01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) die "bad time '$t', use HH:MM (00:00-23:59), e.g. pattx auto on 03:30" ;; esac
+		h="${t%%:*}"; m="${t##*:}"
+		h=$(echo "$h" | sed 's/^0*//'); m=$(echo "$m" | sed 's/^0*//'); h="${h:-0}"; m="${m:-0}"   # ash has no 10# base
+		sed -i '/pattx update/d' "$CRON" 2>/dev/null   # replace any previous schedule (only after the time is valid)
+		echo "$m $h * * * $SELF update >/tmp/pattx-update.log 2>&1" >> "$CRON"
+		say "daily auto-update on at $(printf '%02d:%02d' $h $m) router time (now: $(date '+%H:%M'))" ;;
+	off) sed -i '/pattx update/d' "$CRON" 2>/dev/null; say "auto-update off" ;;
+	*) die "usage: pattx auto on [HH:MM] | pattx auto off" ;;
 	esac
 	/etc/init.d/cron restart >/dev/null 2>&1
 	;;

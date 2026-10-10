@@ -56,7 +56,8 @@ pattx ech                  DNS نودهای ECH در PassWall2 را direct می�
 pattx dns                  نمایش Remote DNS پس‌وال و هشدار اگر tcp باشد
 pattx dns udp [IP] [-y]    تغییر Remote DNS به UDP (هشدار، سؤال، بررسی، برگشت خودکار در صورت خرابی)
 pattx dns restore          برگرداندن آخرین تغییر `pattx dns udp`
-pattx auto on|off          آپدیت خودکار روزانه (cron، ساعت ۰۴:۱۷)
+pattx auto on [HH:MM]      هر روز در ساعت داده‌شده (به وقت روتر) خودکار 'pattx update' را اجرا می‌کند (پیش‌فرض ۰۴:۱۷، مثال: 'pattx auto on 03:30')؛ پیش‌فرض خاموش
+pattx auto off             خاموش کردن آپدیت روزانه (ساعت یعنی ساعت خود روتر: با `date` ببینید؛ OpenWrt پیش‌فرض UTC است مگر در System > General منطقه زمانی را تنظیم کنید)
 pattx uninstall
 ```
 
